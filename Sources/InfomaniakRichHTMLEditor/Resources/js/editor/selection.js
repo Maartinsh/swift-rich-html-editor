@@ -26,8 +26,35 @@ function computeCaretRect() {
     } else {
         const selectionNodeToFocus = getSelectionNodeToTarget(selection);
         lastFocusedSelectionGrabber = selectionNodeToFocus;
-    
-        caretRect = (selectionNodeToFocus == null) ? null : getCaretRect(selectionNodeToFocus);
+
+        if (selectionNodeToFocus != null) {
+            // Determine collapse direction from the grabber type, not node identity.
+            // Node identity fails for single-text-node content (anchorNode === focusNode)
+            // which is the common case for plain-text notes.
+            const grabber = guessMostProbableMovingSelectionGrabber(selection.getRangeAt(0).cloneRange());
+            let collapseToStart;
+            if (grabber === SelectionGrabber.start) {
+                collapseToStart = true;
+            } else if (grabber === SelectionGrabber.end) {
+                collapseToStart = false;
+            } else {
+                // unknown: fall back to node identity (works for multi-node selections)
+                collapseToStart = selectionNodeToFocus !== selection.focusNode;
+            }
+            const r = selection.getRangeAt(0).cloneRange();
+            r.collapse(collapseToStart);
+            const rects = r.getClientRects();
+            if (rects.length > 0) {
+                caretRect = rects[rects.length - 1];
+            } else {
+                // getClientRects() is empty at document boundary positions. Use the overall
+                // selection bounding rect and take the appropriate edge to avoid returning a
+                // rect with full-document height (which causes wrong scroll jumps).
+                const selRect = selection.getRangeAt(0).getBoundingClientRect();
+                const y = collapseToStart ? selRect.top : selRect.bottom;
+                caretRect = { x: selRect.left, y: y, width: Math.max(1, selRect.width), height: 1 };
+            }
+        }
     }
     lastSelectionRange = selection.getRangeAt(0).cloneRange();
 

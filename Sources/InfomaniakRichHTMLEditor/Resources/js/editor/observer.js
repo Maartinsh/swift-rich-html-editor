@@ -17,9 +17,28 @@ function observeResize(target) {
     sizeObserver.observe(target);
 }
 
+let caretPositionTimeout = null;
+
 function observeSelectionChange(target) {
     target.addEventListener("selectionchange", () => {
-        setTimeout(computeAndReportCaretPosition, 120);
+        // Skip spurious events where the text selection didn't actually change
+        // (e.g. fired by WKWebView internal scroll resets). Without this, the handle
+        // guesser sees no diff, falls back to lastFocusedSelectionGrabber, and reports
+        // the wrong endpoint.
+        if (lastSelectionRange != null) {
+            const s = window.getSelection();
+            if (s.rangeCount > 0) {
+                const r = s.getRangeAt(0);
+                if (r.startContainer === lastSelectionRange.startContainer &&
+                    r.startOffset   === lastSelectionRange.startOffset &&
+                    r.endContainer  === lastSelectionRange.endContainer &&
+                    r.endOffset     === lastSelectionRange.endOffset) {
+                    return;
+                }
+            }
+        }
+        clearTimeout(caretPositionTimeout);
+        caretPositionTimeout = setTimeout(computeAndReportCaretPosition, 30);
         reportSelectedTextAttributesIfNecessary();
     });
 }

@@ -18,5 +18,7 @@ function reportSelectedTextAttributesDidChange(textAttributes) {
 }
 
 function reportCaretPositionDidChange(caretRect) {
-    window.webkit.messageHandlers.caretPositionDidChange.postMessage([caretRect.x, caretRect.y, caretRect.width, caretRect.height]);
+    // getClientRects() returns viewport-relative coords. Adding window.scroll* converts to
+    // document-relative coords, which is stable even when WKWebView's internal scroll is non-zero.
+    window.webkit.messageHandlers.caretPositionDidChange.postMessage([caretRect.x + window.scrollX, caretRect.y + window.scrollY, caretRect.width, caretRect.height]);
 }

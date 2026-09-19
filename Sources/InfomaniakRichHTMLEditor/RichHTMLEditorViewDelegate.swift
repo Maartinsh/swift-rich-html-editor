@@ -98,6 +98,8 @@ public protocol RichHTMLEditorViewDelegate: AnyObject {
     ///
     /// - Returns: `false` if the editor should handle the link opening itself.
     func richHTMLEditorView(_ richHTMLEditorView: RichHTMLEditorView, shouldHandleLink link: URL) -> Bool
+
+    func richHTMLEditorViewDocumentDidBecomeInvalid(_ richHTMLEditorView: RichHTMLEditorView)
 }
 
 // Default implementation for optional functions
@@ -117,4 +119,5 @@ public extension RichHTMLEditorViewDelegate {
     func richHTMLEditorView(_ richHTMLEditorView: RichHTMLEditorView, shouldHandleLink link: URL) -> Bool {
         return false
     }
+    func richHTMLEditorViewDocumentDidBecomeInvalid(_ richHTMLEditorView: RichHTMLEditorView) {}
 }

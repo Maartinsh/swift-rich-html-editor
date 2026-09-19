@@ -4,6 +4,9 @@
 
 function observeContentMutation(target, contentContainer) {
     const mutationObserver = new MutationObserver(() => {
+        if ((window.__richHTMLProgrammaticMutationDepth || 0) > 0) {
+            return;
+        }
         reportContentDidChange(contentContainer.innerHTML);
     });
     mutationObserver.observe(target, { subtree: true, childList: true, characterData: true });

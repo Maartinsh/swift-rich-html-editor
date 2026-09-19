@@ -20,19 +20,68 @@ protocol JavaScriptManagerDelegate: AnyObject {
 
 @MainActor
 final class JavaScriptManager {
-    var isDOMContentLoaded = false {
-        didSet {
-            evaluateWaitingFunctions()
-        }
+    private enum DocumentState: Equatable {
+        case unavailable
+        case preparing
+        case ready
+    }
+
+    var isDOMContentLoaded: Bool {
+        documentState == .ready
     }
 
     weak var delegate: JavaScriptManagerDelegate?
 
     private weak var webView: WKWebView?
     private var functionsWaitingForDOM = [JavaScriptFunction]()
+    private var documentState = DocumentState.unavailable
+    private var documentVersion = 0
 
     init(webView: WKWebView) {
         self.webView = webView
+    }
+
+    func invalidateDocument() {
+        documentVersion += 1
+        documentState = .unavailable
+        functionsWaitingForDOM.removeAll()
+    }
+
+    @discardableResult
+    func prepareDocument(
+        styles: [(identifier: String, css: String)],
+        content: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> Bool {
+        guard documentState == .unavailable else { return false }
+        documentState = .preparing
+        let version = documentVersion
+        var functions = styles.map {
+            JavaScriptFunction.injectCSS(content: $0.css, identifier: $0.identifier)
+        }
+        functions.append(contentsOf: functionsWaitingForDOM)
+        functions.append(.setContent(content: content))
+        functionsWaitingForDOM.removeAll()
+
+        let source = functions.map { $0.call() }.joined(separator: "\n")
+        guard let webView else {
+            documentState = .unavailable
+            completion(.failure(JavaScriptManagerError.webViewUnavailable))
+            return true
+        }
+        webView.evaluateJavaScript(source) { [weak self] _, error in
+            guard let self, version == self.documentVersion else { return }
+            if let error {
+                self.documentState = .unavailable
+                self.delegate?.javascriptFunctionDidFail(error: error, function: "prepareDocument")
+                completion(.failure(error))
+            } else {
+                self.documentState = .ready
+                self.evaluateWaitingFunctions()
+                completion(.success(()))
+            }
+        }
+        return true
     }
 
     func setHTMLContent(_ content: String) {
@@ -40,8 +89,8 @@ final class JavaScriptManager {
         evaluateWhenDOMIsReady(function: setContent)
     }
 
-    func injectCSS(_ content: String) {
-        let injectCSS = JavaScriptFunction.injectCSS(content: content)
+    func injectCSS(_ content: String, identifier: String) {
+        let injectCSS = JavaScriptFunction.injectCSS(content: content, identifier: identifier)
         evaluateWhenDOMIsReady(function: injectCSS)
     }
 
@@ -80,14 +129,11 @@ final class JavaScriptManager {
     }
 
     private func evaluateWaitingFunctions() {
-        guard isDOMContentLoaded else {
-            return
-        }
-
-        for function in functionsWaitingForDOM {
+        let functions = functionsWaitingForDOM
+        functionsWaitingForDOM.removeAll()
+        for function in functions {
             evaluate(function: function)
         }
-        functionsWaitingForDOM.removeAll()
     }
 
     private func evaluateWhenDOMIsReady(function: JavaScriptFunction) {
@@ -105,4 +151,8 @@ final class JavaScriptManager {
             }
         }
     }
+}
+
+private enum JavaScriptManagerError: Error {
+    case webViewUnavailable
 }

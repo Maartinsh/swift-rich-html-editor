@@ -304,11 +304,11 @@ public extension RichHTMLEditorView {
         javaScriptManager.setHTMLContent(newContent)
     }
 
-    public func updateNativeHTMLSnapshot(_ html: String) {
+    func updateNativeHTMLSnapshot(_ html: String) {
         rawHTMLContent = html
     }
 
-    public func reloadEditorDocument() {
+    func reloadEditorDocument() {
         beginNewDocument()
         loadWebViewPage()
     }

@@ -20,7 +20,15 @@ function execCommand(command, argument) {
  * @param {string} content - The new HTML content of the editor
  */
 function setContent(content) {
-    getEditor().innerHTML = content;
+    const editor = getEditor();
+    if (!editor) {
+        throw new Error("editor root is missing");
+    }
+    window.__richHTMLProgrammaticMutationDepth = (window.__richHTMLProgrammaticMutationDepth || 0) + 1;
+    editor.innerHTML = content;
+    queueMicrotask(() => {
+        window.__richHTMLProgrammaticMutationDepth = Math.max(0, (window.__richHTMLProgrammaticMutationDepth || 1) - 1);
+    });
 }
 
 /**
@@ -28,8 +36,13 @@ function setContent(content) {
  *
  * @param {string} content - The new CSS rules to add to the editor
  */
-function injectCSS(content) {
-    const styleElement = document.createElement("style");
+function injectCSS(content, identifier) {
+    let styleElement = document.getElementById(identifier);
+    if (!styleElement) {
+        styleElement = document.createElement("style");
+        styleElement.id = identifier;
+        document.head.appendChild(styleElement);
+    }
     styleElement.textContent = content;
-    document.head.appendChild(styleElement);
+    styleElement.setAttribute("data-rich-html-editor-ready", "true");
 }

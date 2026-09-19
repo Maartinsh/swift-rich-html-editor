@@ -39,6 +39,22 @@ import WebKit
 /// property.
 /// Many functions are available to update the style, such as ``RichHTMLEditorView/bold()``.
 public class RichHTMLEditorView: PlatformView {
+    public enum DocumentState: Equatable, Sendable {
+        case loading
+        case ready
+        case invalid
+    }
+
+    public struct Configuration: Sendable {
+        public var persistentStyleIdentifier: String?
+        public var persistentCSS: String?
+
+        public init(persistentStyleIdentifier: String? = nil, persistentCSS: String? = nil) {
+            self.persistentStyleIdentifier = persistentStyleIdentifier
+            self.persistentCSS = persistentCSS
+        }
+    }
+
     // MARK: - Public Properties
 
     /// The HTML code that the editor view contains.
@@ -114,8 +130,11 @@ public class RichHTMLEditorView: PlatformView {
     ///
     /// If an initial content has been set to the editor, it will be displayed once the editor is loaded.
     public var isEditorLoaded: Bool {
-        return javaScriptManager.isDOMContentLoaded
+        documentState == .ready
     }
+
+    public private(set) var documentGeneration = 0
+    public private(set) var documentState = DocumentState.loading
 
     /// The object you use to react to editor's events.
     public weak var delegate: RichHTMLEditorViewDelegate?
@@ -135,9 +154,19 @@ public class RichHTMLEditorView: PlatformView {
     var javaScriptManager: JavaScriptManager!
     var scriptMessageHandler: ScriptMessageHandler!
 
+    private let editorConfiguration: Configuration
+    private var additionalStyles = [(identifier: String, css: String)]()
+    private var additionalStyleSequence = 0
+    private weak var preparedNavigation: WKNavigation?
+
     let logger = Logger(subsystem: Constants.packageID, category: "ScriptMessageHandler")
 
-    override init(frame: CGRect) {
+    public override convenience init(frame: CGRect) {
+        self.init(frame: frame, configuration: Configuration())
+    }
+
+    public init(frame: CGRect, configuration: Configuration) {
+        editorConfiguration = configuration
         super.init(frame: frame)
 
         scriptMessageHandler = ScriptMessageHandler()
@@ -146,6 +175,8 @@ public class RichHTMLEditorView: PlatformView {
         setUpWebView()
         javaScriptManager = JavaScriptManager(webView: webView)
         javaScriptManager.delegate = self
+        beginNewDocument()
+        loadWebViewPage()
     }
 
     @available(*, unavailable)
@@ -176,7 +207,10 @@ public extension RichHTMLEditorView {
     ///
     /// - Parameter css: CSS code to append to the editor.
     func injectAdditionalCSS(_ css: String) {
-        javaScriptManager.injectCSS(css)
+        additionalStyleSequence += 1
+        let identifier = "rich-html-editor-additional-style-\(additionalStyleSequence)"
+        additionalStyles.append((identifier, css))
+        javaScriptManager.injectCSS(css, identifier: identifier)
     }
 
     /// Injects CSS code to customize the appearance of the editor view.
@@ -217,7 +251,6 @@ public extension RichHTMLEditorView {
         setScrollableBehavior(false)
         #endif
 
-        loadWebViewPage()
         loadScripts()
     }
 
@@ -250,11 +283,12 @@ public extension RichHTMLEditorView {
 
     private func loadWebViewPage() {
         guard let indexURL = Bundle.module.url(forResource: "index", withExtension: "html") else {
+            invalidateCurrentDocument()
             return
         }
 
         let request = URLRequest(url: indexURL)
-        webView.load(request)
+        preparedNavigation = webView.load(request)
     }
 
     private func enableWebViewDebug() {
@@ -266,7 +300,23 @@ public extension RichHTMLEditorView {
     }
 
     private func setHTMLContent(_ newContent: String) {
+        rawHTMLContent = newContent
         javaScriptManager.setHTMLContent(newContent)
+    }
+
+    public func updateNativeHTMLSnapshot(_ html: String) {
+        rawHTMLContent = html
+    }
+
+    public func reloadEditorDocument() {
+        beginNewDocument()
+        loadWebViewPage()
+    }
+
+    private func beginNewDocument() {
+        documentGeneration += 1
+        documentState = .loading
+        javaScriptManager.invalidateDocument()
     }
 
     #if canImport(UIKit)
@@ -280,6 +330,42 @@ public extension RichHTMLEditorView {
 // MARK: - WKNavigationDelegate
 
 extension RichHTMLEditorView: WKNavigationDelegate {
+    public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if let navigation, navigation === preparedNavigation {
+            preparedNavigation = nil
+            return
+        }
+        beginNewDocument()
+    }
+
+    public func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+        guard !isCancelledNavigation(error) else { return }
+        preparedNavigation = nil
+        invalidateCurrentDocument()
+    }
+
+    public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+        guard !isCancelledNavigation(error) else { return }
+        preparedNavigation = nil
+        invalidateCurrentDocument()
+    }
+
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        invalidateCurrentDocument()
+    }
+
+    private func invalidateCurrentDocument() {
+        guard documentState != .invalid else { return }
+        documentState = .invalid
+        javaScriptManager.invalidateDocument()
+        delegate?.richHTMLEditorViewDocumentDidBecomeInvalid(self)
+    }
+
+    private func isCancelledNavigation(_ error: any Error) -> Bool {
+        let error = error as NSError
+        return error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled
+    }
+
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         switch navigationAction.navigationType {
         case .linkActivated:
@@ -319,8 +405,23 @@ extension RichHTMLEditorView: UIScrollViewDelegate {
 
 extension RichHTMLEditorView: ScriptMessageHandlerDelegate {
     func editorDidLoad() {
-        javaScriptManager.isDOMContentLoaded = true
-        delegate?.richHTMLEditorViewDidLoad(self)
+        guard documentState == .loading else { return }
+        let generation = documentGeneration
+        var styles = additionalStyles
+        if let identifier = editorConfiguration.persistentStyleIdentifier,
+           let css = editorConfiguration.persistentCSS {
+            styles.insert((identifier, css), at: 0)
+        }
+        javaScriptManager.prepareDocument(styles: styles, content: rawHTMLContent) { [weak self] result in
+            guard let self, generation == self.documentGeneration else { return }
+            switch result {
+            case .success:
+                self.documentState = .ready
+                self.delegate?.richHTMLEditorViewDidLoad(self)
+            case .failure:
+                self.invalidateCurrentDocument()
+            }
+        }
     }
 
     func contentDidChange(_ text: String) {
